@@ -28,34 +28,30 @@
  */
 
 #include <linux/err.h>
-#include <linux/errno.h>
 #include <linux/genalloc.h>
-#include <linux/io.h>
-#include <linux/mm.h>
-#include <linux/module.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/version.h>
-#include <linux/vmalloc.h>
 
 #include "ion.h"
-#include "ion_priv.h"
+
+/*
+ * TODO: non-contigous unammped heaps:
+ * - add a flag to specify contiguity constraint?
+ * - define antoher heap type that allocate to the smae pool(s)?
+ */
 
 struct ion_unmapped_heap {
 	struct ion_heap heap;
 	struct gen_pool *pool;
-	ion_phys_addr_t base;
+	phys_addr_t base;
 	size_t          size;
 };
 
 struct unmapped_buffer_priv {
-	ion_phys_addr_t base;
+	phys_addr_t base;
 };
 
-static ion_phys_addr_t get_buffer_base(struct unmapped_buffer_priv *priv)
+static phys_addr_t get_buffer_base(struct unmapped_buffer_priv *priv)
 {
 	return priv->base;
 }
@@ -65,10 +61,9 @@ static struct device *heap2dev(struct ion_heap *heap)
 	return heap->dev->dev.this_device;
 }
 
-static ion_phys_addr_t ion_unmapped_allocate(struct ion_heap *heap,
+static phys_addr_t ion_unmapped_allocate(struct ion_heap *heap,
 					   unsigned long size,
-					   unsigned long align,
-					   ion_phys_addr_t *addr)
+					   phys_addr_t *addr)
 {
 	struct ion_unmapped_heap *umh =
 		container_of(heap, struct ion_unmapped_heap, heap);
@@ -85,7 +80,7 @@ static ion_phys_addr_t ion_unmapped_allocate(struct ion_heap *heap,
 	return true;
 }
 
-static void ion_unmapped_free(struct ion_heap *heap, ion_phys_addr_t addr,
+static void ion_unmapped_free(struct ion_heap *heap, phys_addr_t addr,
 			    unsigned long size)
 {
 	struct ion_unmapped_heap *umh =
@@ -122,17 +117,16 @@ void ion_unmapped_heap_unmap_dma(struct ion_heap *heap,
 	kfree(buffer->sg_table);
 }
 
-
 static int ion_unmapped_heap_allocate(struct ion_heap *heap,
 				    struct ion_buffer *buffer,
-				    unsigned long size, unsigned long align,
+				    unsigned long size,
 				    unsigned long flags)
 {
 	struct unmapped_buffer_priv *priv;
-	ion_phys_addr_t base;
+	phys_addr_t base;
 	int rc = -EINVAL;
 
-	if (!ion_unmapped_allocate(heap, size, align, &base))
+	if (!ion_unmapped_allocate(heap, size, &base))
 		return -ENOMEM;
 
 	priv = devm_kzalloc(heap2dev(heap), sizeof(*priv), GFP_KERNEL);
@@ -176,7 +170,7 @@ static int ion_unmapped_heap_map_user(struct ion_heap *heap,
 				    struct ion_buffer *buffer,
 				    struct vm_area_struct *vma)
 {
-	ion_phys_addr_t pa = get_buffer_base(buffer->priv_virt);
+	phys_addr_t pa = get_buffer_base(buffer->priv_virt);
 
 	/*
 	 * when user call ION_IOC_ALLOC not with ION_FLAG_CACHED, ion_mmap will
@@ -234,3 +228,33 @@ void ion_unmapped_heap_destroy(struct ion_heap *heap)
 	umh = NULL;
 }
 EXPORT_SYMBOL(ion_unmapped_heap_destroy);
+
+#if defined(CONFIG_ION_DUMMY_UNMAPPED_HEAP) && CONFIG_ION_DUMMY_UNMAPPED_SIZE
+#define DUMMY_UNAMMPED_HEAP_NAME	"unmapped_contiguous"
+
+static int ion_add_dummy_unmapped_heaps(void)
+{
+        struct ion_heap *heap;
+	const char name[] = DUMMY_UNAMMPED_HEAP_NAME;
+	struct ion_platform_heap pheap = {
+		.type	= ION_HEAP_TYPE_UNMAPPED,
+		.base   = CONFIG_ION_DUMMY_UNMAPPED_BASE,
+		.size   = CONFIG_ION_DUMMY_UNMAPPED_SIZE,
+	};
+
+	heap = ion_unmapped_heap_create(&pheap);
+	if (IS_ERR(heap))
+		return PTR_ERR(heap);
+
+	heap->name = kzalloc(sizeof(name), GFP_KERNEL);
+	if (IS_ERR(heap->name)) {
+		kfree(heap);
+		return PTR_ERR(heap->name);
+	}
+	memcpy((char *)heap->name, name, sizeof(name));
+
+	ion_device_add_heap(heap);
+        return 0;
+}
+device_initcall(ion_add_dummy_unmapped_heaps);
+#endif
